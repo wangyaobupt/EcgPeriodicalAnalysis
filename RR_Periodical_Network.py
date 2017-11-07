@@ -1,6 +1,7 @@
 import tensorflow as tf
 import os
 import numpy as np
+import csv
 
 class RrPeriodicalNetwork:
   ###
@@ -14,6 +15,9 @@ class RrPeriodicalNetwork:
 
       with tf.name_scope('bn_beforeRNN'):
         mean,variance = tf.nn.moments(self.inputTensor, axes=[1])
+        variance = broadcast1DTensorTo2D(variance, 1)
+        std_ref = tf.sqrt(variance)
+        tf.summary.histogram('std_ref_in_batch', std_ref)
         tf.summary.histogram('input_mean', mean)
         tf.summary.histogram('input_var', variance)
         broadcastMean = broadcast1DTensorTo2D(mean, max_time)
@@ -28,6 +32,8 @@ class RrPeriodicalNetwork:
         init_state = lstmCell.zero_state(self.batch_size_t, dtype=tf.float32)
         rnn_input = tf.reshape(rnn_input, [-1, max_time, 1])
         raw_output, final_state = tf.nn.dynamic_rnn(lstmCell, rnn_input, initial_state=init_state)
+        self.raw_output = raw_output
+        self.final_state = final_state
         outputs = tf.unstack(tf.transpose(raw_output, [1, 0, 2]))
         rnn_layer_output = outputs[-1]
         rnn_layer_output = tf.identity(rnn_layer_output, 'rnn_out')
@@ -47,7 +53,8 @@ class RrPeriodicalNetwork:
         #num_hidden = 20
         #hidden= tf.layers.dense(rnn_layer_output, num_hidden, activation=tf.nn.relu, kernel_initializer=tf.random_normal_initializer)
         #tf.summary.histogram('hidden', hidden)
-        std = tf.layers.dense(rnn_layer_output, 1, activation=tf.nn.relu, kernel_initializer=tf.random_normal_initializer)
+        std_from_bn_data = tf.layers.dense(rnn_layer_output, 1, activation=tf.nn.relu, kernel_initializer=tf.random_normal_initializer)
+        std = std_from_bn_data * std_ref
         self.std = tf.identity(std, 'STD_x')
         tf.summary.histogram('predicted_std', self.std)
 
@@ -64,8 +71,7 @@ class RrPeriodicalNetwork:
         # To avoid network output std to infinite, which would cause loss_acc to 0 no matter what expectation is, we need to add penalty to std
         # the best std would be zero, the larger the worse.
         # The reference is used to normalize predicted std value      
-        std_ref = tf.sqrt(variance)
-        tf.summary.histogram('std_ref_in_batch', std_ref)
+        
         loss_std_penalty = tf.reduce_mean(tf.exp(tf.pow(std/(std_ref + 1), 2)))
         tf.summary.scalar('Std Loss', loss_std_penalty)
 
@@ -115,7 +121,7 @@ class RrPeriodicalNetwork:
   def train(self, isTrainOnPreviousModel, iterCNT, learningRate, trainData, trainLabel, valData, valLabel):
     num_of_element_in_train_set = trainData.shape[0]
     print "num_of_element_in_train_set=%d"%num_of_element_in_train_set
-    batch_size = 128
+    batch_size = 4096
 
     if isTrainOnPreviousModel:
       self.get_model_checkpoint()
@@ -129,13 +135,17 @@ class RrPeriodicalNetwork:
         trainInputTensor = trainData[idx%num_of_element_in_train_set:(idx+batch_size)%num_of_element_in_train_set]
         trainLabelTensor = trainLabel[idx%num_of_element_in_train_set:(idx+batch_size)%num_of_element_in_train_set]
      
-      [train, log_sum, rnn_in, rnn_out] = self.sess.run([self.train_op, self.tb_sum, self.rnn_input, self.rnn_layer_output], \
+      [train, log_sum, rnn_in, rnn_out, rnn_raw_out,rnn_state] = self.sess.run([self.train_op, self.tb_sum, \
+                    self.rnn_input, self.rnn_layer_output, self.raw_output, self.final_state], \
                     feed_dict={self.batch_size_t: batch_size, self.inputTensor:trainInputTensor, self.labelTensor:trainLabelTensor, self.lr:learningRate})
       if np.any(np.isnan(rnn_out)):
         print "curIdx=%d"%idx
-        print rnn_in
-        for idx in range(rnn_out.shape[0]):
-          print rnn_out[idx]
+        for row in range(0, 128):
+          csvRow = []
+          for col in range(0,5):
+            csvRow.append(str(rnn_in[row][col]))
+          print ','.join(csvRow)        
+        
         
       self.train_writer.add_summary(log_sum, global_step=idx)
 
@@ -143,7 +153,7 @@ class RrPeriodicalNetwork:
         print "Interation count = %d"%(int(idx/num_of_element_in_train_set))
         self.train_writer.flush()
         self.validate(valData, valLabel, idx)
-        self.save_model_checkpoint(idx)
+        self.save_model_checkpoint(int(idx/num_of_element_in_train_set))
 
       prev_index = idx
 
@@ -160,9 +170,10 @@ class RrPeriodicalNetwork:
 
     self.validation_writer.add_summary(tb_sum, global_step=idx)
     self.validation_writer.flush()
-        
+    
+    vLabel = np.reshape(vLabel, (-1,1))       
     std_tensor[std_tensor < 0.1] = 0.1 # to avoid inf result, if std is 0, change it to 0.1
-    relative_error_tensor = np.absolute(e_tensor - np.reshape(vLabel, (-1,1)))/std_tensor
+    relative_error_tensor = np.absolute(e_tensor - vLabel)/std_tensor
     relative_error_tensor = np.reshape(relative_error_tensor, -1)
         
     numBins = 5
@@ -175,6 +186,19 @@ class RrPeriodicalNetwork:
 
     print "Total = %d. %d in [0, 0.5]std, %d in (0.5, 1.0] std, %d in (1.0, 2.0] std, %d in (2.0,3.0] std, %d in (3.0, inf] std"\
           % (num_of_element, count_bin[0], count_bin[1], count_bin[2], count_bin[3], count_bin[4])
+    
+    print e_tensor.shape
+    print std_tensor.shape
+    print vLabel.shape
+    print vData.shape
+    csvData = np.concatenate((e_tensor, std_tensor, vLabel, vData), axis=1)
+    debugFilePathName = ('debug/validation_%d.csv'%idx)
+    with open(debugFilePathName, 'wb') as oFile:
+      csvWriter = csv.writer(oFile)
+      csvWriter.writerow(['predicted_value', 'predicted_std', 'label', 'inference_source_1_to_N'])      
+      csvWriter.writerows(csvData)
+      
+    
 
   def save_model_checkpoint(self, i):
     self.saver.save(self.sess, self.savePath + "model.ckpt", global_step=i)
