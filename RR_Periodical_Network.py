@@ -187,10 +187,6 @@ class RrPeriodicalNetwork:
     print "Total = %d. %d in [0, 0.5]std, %d in (0.5, 1.0] std, %d in (1.0, 2.0] std, %d in (2.0,3.0] std, %d in (3.0, inf] std"\
           % (num_of_element, count_bin[0], count_bin[1], count_bin[2], count_bin[3], count_bin[4])
     
-    print e_tensor.shape
-    print std_tensor.shape
-    print vLabel.shape
-    print vData.shape
     csvData = np.concatenate((e_tensor, std_tensor, vLabel, vData), axis=1)
     debugFilePathName = ('debug/validation_%d.csv'%idx)
     with open(debugFilePathName, 'wb') as oFile:
