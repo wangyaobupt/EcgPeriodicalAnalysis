@@ -1,32 +1,9 @@
 import csv
 import numpy as np
-from  RR_Periodical_Network import RrPeriodicalNetwork
-
-"""
-DATA Set is a list of dicts, for each dict, 3 parts are included
-  data: max_time*1 float, N is number of element, max_time is the length of sequence,
-  label:  float, the next element
-  wid: str, a str to save waveID which is used to trace back to original waveform, this str can be empty str,
-"""
-def prepareDataSet(filename, max_time):
-    dataSet = []
-    with open(filename, 'rb') as rawFile:
-        csvReader = csv.reader(rawFile)
-        firstLine = True
-        for row in csvReader:
-            if firstLine:
-                firstLine = False
-                continue
-            id_str = row[0]
-            len = int(row[2])
-            ppInterValList = row[5:]
-            count = 0
-            while len >  count+max_time:
-                data = [float(x) for x in ppInterValList[count:count+max_time]]
-                label = float(ppInterValList[count+max_time])
-                dataSet.append({'data':data, 'label':label, 'wid':id_str})
-                count = count + 1
-    return dataSet
+import os
+from RR_Periodical_Network import *
+from DataReaderMITBIH import DataReaderMITBIH
+from DataReaderLohas import DataReaderLohas
 
 """
 Convert dataSet into [trainData, trainLabel] for feed into tensorflow model
@@ -54,21 +31,38 @@ def randomSelectKFromN(K, N):
     return resultList
 
 if __name__ == '__main__':
-    dat_filename = './data/Stat_ECG_Peakpair_list.csv'
-    max_time = 5
+    lohas_dat_filename = './data/LohasData/Stat_ECG_Peakpair_list.csv'
+    mit_dat_filepath = './data/20171024_ECG_MIT_peak_data/'
+    cache_data_file = './cache_data.npy'
+    max_time = 20
     val_ratio = 0.01
     learningRate =0.001
     rnn_output_size = 20
     iteration = 1000
 
-    dataSet = prepareDataSet(dat_filename, max_time)
-    train_data, train_label = convertDataSetToTensorFeed(dataSet,max_time)
+    #if os.path.isfile(cache_data_file):
+    if False:
+        with open(cache_data_file, "rb") as f:
+            train_data = np.load(f)
+            train_label = np.load(f)
+            val_data = np.load(f)
+            val_label = np.load(f)
+    else:
+        #dataSet = DataReaderLohas(lohas_dat_filename).prepareDataSet(max_time)
+        dataSet = DataReaderMITBIH(mit_dat_filepath, 360).prepareDataSet(max_time)
+        train_data, train_label = convertDataSetToTensorFeed(dataSet, max_time)
 
-    val_index_list  = randomSelectKFromN(int(val_ratio*len(dataSet)), len(dataSet))
-    valSet = []
-    for index in val_index_list:
-      valSet.append(dataSet[index])
-    val_data, val_label = convertDataSetToTensorFeed(valSet,max_time)
+        val_index_list  = randomSelectKFromN(int(val_ratio*len(dataSet)), len(dataSet))
+        valSet = []
+        for index in val_index_list:
+            valSet.append(dataSet[index])
+        val_data, val_label = convertDataSetToTensorFeed(valSet,max_time)
+
+        with open(cache_data_file, 'wb') as f:
+            np.save(f, train_data)
+            np.save(f, train_label)
+            np.save(f, val_data)
+            np.save(f, val_data)
 
     network = RrPeriodicalNetwork(max_time, rnn_output_size)
     network.train(False, iteration, learningRate, train_data, train_label, val_data, val_label)
