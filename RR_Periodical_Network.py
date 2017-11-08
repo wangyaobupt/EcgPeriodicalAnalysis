@@ -47,7 +47,7 @@ class RrPeriodicalNetwork:
         #num_hidden = 20
         #hidden= tf.layers.dense(rnn_layer_output, num_hidden, activation=tf.nn.relu, kernel_initializer=tf.random_normal_initializer)
         #tf.summary.histogram('hidden', hidden)
-        expectation  = tf.layers.dense(rnn_layer_output, 1, activation=tf.nn.relu, kernel_initializer=tf.random_normal_initializer)
+        expectation  = tf.layers.dense(rnn_layer_output, 1, activation=None, kernel_initializer=tf.random_normal_initializer)
         #expectation = (expectation + 1) * broadcast1DTensorTo2D(mean,1)
         self.expectation = tf.identity(expectation, 'E_x')
         tf.summary.histogram('predicted_e', self.expectation)
@@ -62,16 +62,8 @@ class RrPeriodicalNetwork:
         #tf.summary.histogram('predicted_std', self.std)
 
       with tf.name_scope('loss'):
-        valid_range = tf.ones([self.batch_size_t, 1])*self.predict_range
-        error_tensor =  tf.abs(self.expectation - tf.reshape(self.labelTensor, [-1,1]))     
-        # if error_tensor >> valid_range, classify_result  = 0
-        # otherwise (error_tensor < valid_range), classify_result -> 1
-        classify_result = tf.sigmoid(10*(valid_range - error_tensor)/valid_range)
-        tf.summary.histogram('classify_result', classify_result)
-        self.classify_result = classify_result
-        
-        target_tensor = tf.ones([self.batch_size_t, 1])
-        self.loss = tf.losses.mean_squared_error(target_tensor, classify_result)    
+        error_tensor =  (self.expectation - tf.reshape(self.labelTensor, [-1,1]))
+        self.loss = tf.nn.l2_loss(error_tensor)
         tf.summary.scalar('Loss', self.loss)
 
       # define train ops
@@ -131,8 +123,8 @@ class RrPeriodicalNetwork:
         trainInputTensor = trainData[idx%num_of_element_in_train_set:(idx+batch_size)%num_of_element_in_train_set]
         trainLabelTensor = trainLabel[idx%num_of_element_in_train_set:(idx+batch_size)%num_of_element_in_train_set]
      
-      [train, log_sum, classify_result, loss, expectation] = self.sess.run([self.train_op, self.tb_sum, \
-                    self.classify_result, self.loss, self.expectation], \
+      [train, log_sum, loss, expectation] = self.sess.run([self.train_op, self.tb_sum, \
+                    self.loss, self.expectation], \
                     feed_dict={self.batch_size_t: batch_size, self.inputTensor:trainInputTensor, self.labelTensor:trainLabelTensor, self.lr:learningRate})
       """
       if np.any(np.isnan(rnn_out)):
@@ -142,11 +134,7 @@ class RrPeriodicalNetwork:
           for col in range(0,5):
             csvRow.append(str(trainInputTensor[row][col]))
           print ','.join(csvRow)
-      """
-      print expectation[0]
-      print classify_result[0]
-      print loss
-        
+      """       
         
       self.train_writer.add_summary(log_sum, global_step=idx)
 
