@@ -7,12 +7,14 @@ class RrPeriodicalNetwork:
   ###
   # max_time: to predicting next RRI, the number of RRI provided to network
   # rnn_output_size: output size of rnn layer
-  def __init__(self, max_time, rnn_output_size, isUseGPU=True, tfWriterLogPath='tf_writer', modelSavedPath='model/'):
+  def __init__(self, max_time, rnn_output_size, predict_range, isUseGPU=True, tfWriterLogPath='tf_writer', modelSavedPath='model/'):
       self.batch_size_t = tf.placeholder(tf.int32, [], name='batchSize')
       self.inputTensor = tf.placeholder(tf.float32, [None, max_time], name='inputTensor')
       self.labelTensor = tf.placeholder(tf.float32, [None], name='LabelTensor')
       self.lr = tf.placeholder(tf.float32, [], name='learningRate')
+      self.predict_range = predict_range
 
+      """
       with tf.name_scope('bn_beforeRNN'):
         mean,variance = tf.nn.moments(self.inputTensor, axes=[1])
         variance = broadcast1DTensorTo2D(variance, 1)
@@ -26,11 +28,12 @@ class RrPeriodicalNetwork:
           None, None, 1)
         self.rnn_input = rnn_input
         tf.summary.histogram('bn_output', rnn_input)
+      """
         
       with tf.name_scope('rnn_layer'):     
         lstmCell = tf.nn.rnn_cell.BasicLSTMCell(rnn_output_size)
         init_state = lstmCell.zero_state(self.batch_size_t, dtype=tf.float32)
-        rnn_input = tf.reshape(rnn_input, [-1, max_time, 1])
+        rnn_input = tf.reshape(self.inputTensor, [-1, max_time, 1])
         raw_output, final_state = tf.nn.dynamic_rnn(lstmCell, rnn_input, initial_state=init_state)
         self.raw_output = raw_output
         self.final_state = final_state
@@ -38,44 +41,37 @@ class RrPeriodicalNetwork:
         rnn_layer_output = outputs[-1]
         rnn_layer_output = tf.identity(rnn_layer_output, 'rnn_out')
         self.rnn_layer_output = rnn_layer_output
-        #tf.summary.histogram('rnn_layer_output', rnn_layer_output)
+        tf.summary.histogram('rnn_layer_output', rnn_layer_output)
 
       with tf.name_scope('expct_layer'):
         #num_hidden = 20
         #hidden= tf.layers.dense(rnn_layer_output, num_hidden, activation=tf.nn.relu, kernel_initializer=tf.random_normal_initializer)
         #tf.summary.histogram('hidden', hidden)
         expectation  = tf.layers.dense(rnn_layer_output, 1, activation=tf.nn.relu, kernel_initializer=tf.random_normal_initializer)
-        expectation = (expectation + 1) * broadcast1DTensorTo2D(mean,1)
+        #expectation = (expectation + 1) * broadcast1DTensorTo2D(mean,1)
         self.expectation = tf.identity(expectation, 'E_x')
         tf.summary.histogram('predicted_e', self.expectation)
 
-      with tf.name_scope('std_layer'):
+      #with tf.name_scope('std_layer'):
         #num_hidden = 20
         #hidden= tf.layers.dense(rnn_layer_output, num_hidden, activation=tf.nn.relu, kernel_initializer=tf.random_normal_initializer)
         #tf.summary.histogram('hidden', hidden)
-        std_from_bn_data = tf.layers.dense(rnn_layer_output, 1, activation=tf.nn.relu, kernel_initializer=tf.random_normal_initializer)
-        std = std_from_bn_data * std_ref
-        self.std = tf.identity(std, 'STD_x')
-        tf.summary.histogram('predicted_std', self.std)
+        #std_from_bn_data = tf.layers.dense(rnn_layer_output, 1, activation=tf.nn.relu, kernel_initializer=tf.random_normal_initializer)
+        #std = std_from_bn_data * std_ref
+        #self.std = tf.identity(std, 'STD_x')
+        #tf.summary.histogram('predicted_std', self.std)
 
       with tf.name_scope('loss'):
-        # Use 1/Gauss Function as accurate part of loss function,
-        # if predicted expectation == label, the loss is 0
-        # if ABS(predicted expectation - label) >> std, the loss will goes infinite expotentionally
-        # acc_loss_vec = 1 - tf.exp(-1*tf.pow((self.labelTensor-expectation), 2) / (2*tf.pow(std, 2) + 0.01)) 
-        acc_loss_vec = tf.pow((self.labelTensor-expectation), 2) / (2*tf.pow(std, 2) + 1)
-        tf.summary.histogram('acc_loss_vec', acc_loss_vec)
-        loss_acc = tf.reduce_mean(acc_loss_vec)        
-        tf.summary.scalar('Acc Loss', loss_acc)
-
-        # To avoid network output std to infinite, which would cause loss_acc to 0 no matter what expectation is, we need to add penalty to std
-        # the best std would be zero, the larger the worse.
-        # The reference is used to normalize predicted std value      
+        valid_range = tf.ones([self.batch_size_t, 1])*self.predict_range
+        error_tensor =  tf.abs(self.expectation - tf.reshape(self.labelTensor, [-1,1]))     
+        # if error_tensor >> valid_range, classify_result  = 0
+        # otherwise (error_tensor < valid_range), classify_result -> 1
+        classify_result = tf.sigmoid(10*(valid_range - error_tensor)/valid_range)
+        tf.summary.histogram('classify_result', classify_result)
+        self.classify_result = classify_result
         
-        loss_std_penalty = tf.reduce_mean(tf.exp(tf.pow(std/(std_ref + 1), 2)))
-        tf.summary.scalar('Std Loss', loss_std_penalty)
-
-        self.loss = loss_acc + loss_std_penalty
+        target_tensor = tf.ones([self.batch_size_t, 1])
+        self.loss = tf.losses.mean_squared_error(target_tensor, classify_result)    
         tf.summary.scalar('Loss', self.loss)
 
       # define train ops
@@ -121,7 +117,7 @@ class RrPeriodicalNetwork:
   def train(self, isTrainOnPreviousModel, iterCNT, learningRate, trainData, trainLabel, valData, valLabel):
     num_of_element_in_train_set = trainData.shape[0]
     print "num_of_element_in_train_set=%d"%num_of_element_in_train_set
-    batch_size = 4096
+    batch_size = 256
 
     if isTrainOnPreviousModel:
       self.get_model_checkpoint()
@@ -135,16 +131,21 @@ class RrPeriodicalNetwork:
         trainInputTensor = trainData[idx%num_of_element_in_train_set:(idx+batch_size)%num_of_element_in_train_set]
         trainLabelTensor = trainLabel[idx%num_of_element_in_train_set:(idx+batch_size)%num_of_element_in_train_set]
      
-      [train, log_sum, rnn_in, rnn_out, rnn_raw_out,rnn_state] = self.sess.run([self.train_op, self.tb_sum, \
-                    self.rnn_input, self.rnn_layer_output, self.raw_output, self.final_state], \
+      [train, log_sum, classify_result, loss, expectation] = self.sess.run([self.train_op, self.tb_sum, \
+                    self.classify_result, self.loss, self.expectation], \
                     feed_dict={self.batch_size_t: batch_size, self.inputTensor:trainInputTensor, self.labelTensor:trainLabelTensor, self.lr:learningRate})
+      """
       if np.any(np.isnan(rnn_out)):
         print "curIdx=%d"%idx
         for row in range(0, 128):
           csvRow = []
           for col in range(0,5):
-            csvRow.append(str(rnn_in[row][col]))
-          print ','.join(csvRow)        
+            csvRow.append(str(trainInputTensor[row][col]))
+          print ','.join(csvRow)
+      """
+      print expectation[0]
+      print classify_result[0]
+      print loss
         
         
       self.train_writer.add_summary(log_sum, global_step=idx)
@@ -160,40 +161,33 @@ class RrPeriodicalNetwork:
     return
 
   def inference(self, data):
-    [e, std] = self.sess.run([self.expectation, self.std], feed_dict={self.inputTensor:data})
-    return e,std
+    [e] = self.sess.run([self.expectation], feed_dict={self.inputTensor:data})
+    return e
 
   def validate(self, vData, vLabel, idx):
     num_of_element = vData.shape[0]
-    [e_tensor, std_tensor, loss, tb_sum] = self.sess.run([self.expectation, self.std, self.loss, self.tb_sum],\
+    [e_tensor, tb_sum] = self.sess.run([self.expectation, self.tb_sum],\
                                                  feed_dict={self.batch_size_t: num_of_element, self.inputTensor:vData, self.labelTensor:vLabel})
 
     self.validation_writer.add_summary(tb_sum, global_step=idx)
     self.validation_writer.flush()
     
     vLabel = np.reshape(vLabel, (-1,1))       
-    std_tensor[std_tensor < 0.1] = 0.1 # to avoid inf result, if std is 0, change it to 0.1
-    relative_error_tensor = np.absolute(e_tensor - vLabel)/std_tensor
-    relative_error_tensor = np.reshape(relative_error_tensor, -1)
+    error_tensor = np.absolute(e_tensor - vLabel)
+    error_tensor = np.reshape(error_tensor, -1)
         
-    numBins = 5
-    count_bin = np.zeros((numBins, 1))
-    count_bin[0] = np.where(relative_error_tensor <= 0.5)[0].shape[0]
-    count_bin[1] = np.where(relative_error_tensor <= 1)[0].shape[0] - count_bin[0]
-    count_bin[2] = np.where(relative_error_tensor <= 2)[0].shape[0] - count_bin[0] - count_bin[1]
-    count_bin[3] = np.where(relative_error_tensor <= 3)[0].shape[0] - count_bin[0] - count_bin[1] - count_bin[2]
-    count_bin[4] = np.where(relative_error_tensor > 3)[0].shape[0]
+    num_correct = np.where(error_tensor <= self.predict_range)[0].shape[0]
+    num_wrong = num_of_element - num_correct
 
-    print "Total = %d. %d in [0, 0.5]std, %d in (0.5, 1.0] std, %d in (1.0, 2.0] std, %d in (2.0,3.0] std, %d in (3.0, inf] std"\
-          % (num_of_element, count_bin[0], count_bin[1], count_bin[2], count_bin[3], count_bin[4])
+    print "Total = %d. %d predicted correct, acc = %f"\
+          % (num_of_element, num_correct, num_correct*1.0/num_of_element)
     
-    csvData = np.concatenate((e_tensor, std_tensor, vLabel, vData), axis=1)
+    csvData = np.concatenate((e_tensor, vLabel, vData), axis=1)
     debugFilePathName = ('debug/validation_%d.csv'%idx)
     with open(debugFilePathName, 'wb') as oFile:
       csvWriter = csv.writer(oFile)
-      csvWriter.writerow(['predicted_value', 'predicted_std', 'label', 'inference_source_1_to_N'])      
-      csvWriter.writerows(csvData)
-      
+      csvWriter.writerow(['predicted_value', 'label', 'inference_source_1_to_N'])      
+      csvWriter.writerows(csvData)   
     
 
   def save_model_checkpoint(self, i):
