@@ -15,23 +15,22 @@ class RrPeriodicalNetwork:
       self.predict_range = predict_range
 
       with tf.name_scope('bn_beforeRNN'):
-        #mean,variance = tf.nn.moments(self.inputTensor, axes=[1])
-        #variance = broadcast1DTensorTo2D(variance, 1)
-        #std_ref = tf.sqrt(variance)
-        #tf.summary.histogram('std_ref_in_batch', std_ref)
-        #tf.summary.histogram('input_mean', mean)
-        #tf.summary.histogram('input_var', variance)
-        #broadcastMean = broadcast1DTensorTo2D(mean, max_time)
-        #broadcastVariance = broadcast1DTensorTo2D(variance, max_time)        
-        #rnn_input = tf.nn.batch_normalization(self.inputTensor, broadcastMean, broadcastVariance, \
-        #  None, None, 1)
-        #self.rnn_input = rnn_input
-        #tf.summary.histogram('bn_output', rnn_input)
-        max_tensor = tf.reduce_max(self.inputTensor, axis=[1])
-        broadcastMax = broadcast1DTensorTo2D(max_tensor, max_time)
-        min_tensor = tf.reduce_min(self.inputTensor, axis=[1])
-        broadcastMin = broadcast1DTensorTo2D(min_tensor, max_time)
-        rnn_input = (self.inputTensor - broadcastMin) / (broadcastMax - broadcastMin)
+        gauss_bn = False
+        if gauss_bn: # Gauss (non-linear) normalization
+          mean,variance = tf.nn.moments(self.inputTensor, axes=[1])
+          tf.summary.histogram('input_mean', mean)
+          tf.summary.histogram('input_var', variance)
+          broadcastMean = broadcast1DTensorTo2D(mean, max_time)
+          broadcastVariance = broadcast1DTensorTo2D(variance, max_time)        
+          rnn_input = tf.nn.batch_normalization(self.inputTensor, broadcastMean, broadcastVariance, \
+            None, None, 1)
+        else: # linear normalization
+          max_tensor = tf.reduce_max(self.inputTensor, axis=[1])
+          broadcastMax = broadcast1DTensorTo2D(max_tensor, max_time)
+          min_tensor = tf.reduce_min(self.inputTensor, axis=[1])
+          broadcastMin = broadcast1DTensorTo2D(min_tensor, max_time)
+          rnn_input = (self.inputTensor - broadcastMin) / (broadcastMax - broadcastMin)
+        
         tf.summary.histogram('bn_output', rnn_input)
         
       with tf.name_scope('rnn_layer'):     
@@ -53,7 +52,13 @@ class RrPeriodicalNetwork:
         #tf.summary.histogram('hidden', hidden)
         raw_predict  = tf.layers.dense(rnn_layer_output, 1, activation=None, kernel_initializer=tf.random_normal_initializer)
         tf.summary.histogram('raw_predicted', raw_predict)
-        predict = broadcast1DTensorTo2D(min_tensor,1) + \
+
+        if gauss_bn:
+          std_ref = tf.sqrt(broadcast1DTensorTo2D(variance, 1))
+          mean_ref = broadcast1DTensorTo2D(mean, 1)  
+          predict = raw_predict * std_ref + mean_ref
+        else:
+          predict = broadcast1DTensorTo2D(min_tensor,1) + \
             raw_predict*(broadcast1DTensorTo2D(max_tensor,1) - broadcast1DTensorTo2D(min_tensor,1))
         self.predict = tf.identity(predict, 'predict')
         
@@ -70,7 +75,7 @@ class RrPeriodicalNetwork:
 
       with tf.name_scope('loss'):
         error_tensor =  (self.predict - tf.reshape(self.labelTensor, [-1,1]))
-        self.loss = tf.nn.l2_loss(error_tensor)
+        self.loss = tf.reduce_mean(tf.pow(error_tensor, 2))
         tf.summary.scalar('Loss', self.loss) 
 
       # define train ops
@@ -92,6 +97,7 @@ class RrPeriodicalNetwork:
       removeFileInDir(tfWriterLogPath)
       self.train_writer = tf.summary.FileWriter(tfWriterLogPath + '/train', self.sess.graph)
       self.validation_writer = tf.summary.FileWriter(tfWriterLogPath + '/validate', self.sess.graph)
+      self.test_writer = tf.summary.FileWriter(tfWriterLogPath + '/test', self.sess.graph)
 
       # define saver
       all_vars = tf.global_variables()
@@ -146,9 +152,10 @@ class RrPeriodicalNetwork:
       self.train_writer.add_summary(log_sum, global_step=idx)
 
       if int(idx/num_of_element_in_train_set) > int(prev_index / num_of_element_in_train_set):
-        print "Interation count = %d"%(int(idx/num_of_element_in_train_set))
+        iterationCount = int(idx/num_of_element_in_train_set)
+        print "Interation count = %d"%(iterationCount)
         self.train_writer.flush()
-        self.validate(valData, valLabel, idx)
+        self.validate(valData, valLabel, idx, False)
         self.save_model_checkpoint(int(idx/num_of_element_in_train_set))
 
       prev_index = idx
@@ -159,13 +166,16 @@ class RrPeriodicalNetwork:
     [e] = self.sess.run([self.predict], feed_dict={self.inputTensor:data})
     return e
 
-  def validate(self, vData, vLabel, idx):
+  def validate(self, vData, vLabel, idx, isPrintDebugFile=False, isTestMode=False):
     num_of_element = vData.shape[0]
     [e_tensor, tb_sum] = self.sess.run([self.predict, self.tb_sum],\
                                                  feed_dict={self.batch_size_t: num_of_element, self.inputTensor:vData, self.labelTensor:vLabel})
-
-    self.validation_writer.add_summary(tb_sum, global_step=idx)
-    self.validation_writer.flush()
+    if isTestMode:
+      writer = self.test_writer
+    else:
+      writer = self.validation_writer
+    writer.add_summary(tb_sum, global_step=idx)
+    writer.flush()
     
     vLabel = np.reshape(vLabel, (-1,1))       
     error_tensor = np.absolute(e_tensor - vLabel)
@@ -177,7 +187,7 @@ class RrPeriodicalNetwork:
     print "Total = %d. %d predicted correct, acc = %f"\
           % (num_of_element, num_correct, num_correct*1.0/num_of_element)
     
-    if True:
+    if isPrintDebugFile:
       csvData = np.concatenate((e_tensor, vLabel, vData), axis=1)
       debugFilePathName = ('debug/validation_%d.csv'%idx)
       with open(debugFilePathName, 'wb') as oFile:

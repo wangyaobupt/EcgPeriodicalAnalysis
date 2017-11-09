@@ -6,6 +6,15 @@ from DataReaderMITBIH import DataReaderMITBIH
 from DataReaderLohas import DataReaderLohas
 from DataReaderSim import DataReaderSim
 
+
+def splitTrainAndTestDataSet(dataSet, test_set_ratio):
+    total_number = len(dataSet)
+    size_of_test_set = int(test_set_ratio*total_number)
+    size_of_train_set = total_number - size_of_test_set
+    trainSet = dataSet[:size_of_train_set]
+    testSet = dataSet[size_of_train_set:]
+    return trainSet, testSet
+    
 """
 Convert dataSet into [trainData, trainLabel] for feed into tensorflow model
 """
@@ -33,9 +42,11 @@ def randomSelectKFromN(K, N):
 if __name__ == '__main__':
     lohas_dat_filename = './data/LohasData/Stat_ECG_Peakpair_list.csv'
     mit_dat_filepath = './data/20171024_ECG_MIT_peak_data/100Rpeak.txt'
+    mit_dat_filepath = './data/20171024_ECG_MIT_peak_data/101Rpeak.txt'
     cache_data_file = './cache_data.npy'
     max_time = 50
     val_ratio = 0.01
+    test_set_ratio = 0.1
     learningRate = 0.001
     rnn_output_size = 40
     iteration = 1000
@@ -45,10 +56,7 @@ if __name__ == '__main__':
 
     if (not force_read_data) and os.path.isfile(cache_data_file):
         with open(cache_data_file, "rb") as f:
-            train_data = np.load(f)
-            train_label = np.load(f)
-            val_data = np.load(f)
-            val_label = np.load(f)
+            train_data, train_label, test_data, test_label, val_data, val_label = np.load(f)
     else:
         # Lohas
         #dataSet = DataReaderLohas(lohas_dat_filename).prepareDataSet(max_time)
@@ -57,22 +65,24 @@ if __name__ == '__main__':
         # Simulation
         #dataSet = DataReaderSim(100000, 'sin_array').prepareDataSet(max_time)
         
-        train_data, train_label = convertDataSetToTensorFeed(dataSet, max_time)
+        trainSet, testSet = splitTrainAndTestDataSet(dataSet, test_set_ratio)
+        
+        train_data, train_label = convertDataSetToTensorFeed(trainSet, max_time)
+        test_data, test_label = convertDataSetToTensorFeed(testSet, max_time)
 
-        val_index_list  = randomSelectKFromN(int(val_ratio*len(dataSet)), len(dataSet))
+        val_index_list  = randomSelectKFromN(int(val_ratio*len(trainSet)), len(trainSet))
         valSet = []
-        for index in val_index_list:
-            valSet.append(dataSet[index])
+        for idx in val_index_list:
+            valSet.append(trainSet[idx])
         val_data, val_label = convertDataSetToTensorFeed(valSet,max_time)
 
         with open(cache_data_file, 'wb') as f:
-            np.save(f, train_data)
-            np.save(f, train_label)
-            np.save(f, val_data)
-            np.save(f, val_label)
+            np.save(f, (train_data, train_label, test_data, test_label, val_data, val_label))
 
     network = RrPeriodicalNetwork(max_time, rnn_output_size, predict_range)
-    network.train(train_based_on_prev, iteration, learningRate, train_data, train_label, train_data, train_label)
+    network.train(train_based_on_prev, iteration, learningRate, train_data, train_label, val_data, val_label)
+    #network.get_model_checkpoint()
+    network.validate(test_data,test_label, 0, True, True)
 
 
 
