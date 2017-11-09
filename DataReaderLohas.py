@@ -1,4 +1,5 @@
 import csv
+from DataUtils import *
 
 class DataReaderLohas:
   def __init__(self, filename):
@@ -10,11 +11,11 @@ class DataReaderLohas:
     label:  float, the next element
     wid: str, a str to save waveID which is used to trace back to original waveform, this str can be empty str, ONLY for debug purpose
   """
-  def prepareDataSet(self, time_steps_for_rnn):
-      dataSet = []
+  def prepareDataSet(self, time_steps_for_rnn, testSetRatio=0.1):
       with open(self.filename, 'rb') as rawFile:
           csvReader = csv.reader(rawFile)
           firstLine = True
+          dataSet=[]
           for row in csvReader:
               if firstLine:
                   firstLine = False
@@ -28,4 +29,4 @@ class DataReaderLohas:
                   label = float(ppInterValList[count+time_steps_for_rnn])
                   dataSet.append({'data':data, 'label':label, 'wid':id_str})
                   count = count + 1
-      return dataSet
+      return splitTrainAndTestDataSet(dataSet, testSetRatio)

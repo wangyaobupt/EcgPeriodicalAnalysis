@@ -1,4 +1,5 @@
 import os
+from DataUtils import *
 
 class DataReaderMITBIH:
   def __init__(self, filename, sampleRate):
@@ -21,17 +22,21 @@ class DataReaderMITBIH:
 
     return rri_list
 
-  def prepareDataSet(self, time_steps_for_rnn):
-    result = []
+  def prepareDataSet(self, time_steps_for_rnn, testSetRatio=0.1):
     if os.path.isfile(self.filename):
       result = self.readDataSetFromOneFile(self.filename, time_steps_for_rnn)
+      trainSet, testSet = splitTrainAndTestDataSet(result, testSetRatio)
     elif os.path.isdir(self.filename):
+      trainSet = []
+      testSet = []
       for root, dirs, filenames in os.walk(self.filename):
         for file in filenames:
           if 'Rpeak.txt' in file:
-            result += self.readDataSetFromOneFile(os.path.join(root, file), time_steps_for_rnn)
+            trainIter, testIter= splitTrainAndTestDataSet(self.readDataSetFromOneFile(os.path.join(root, file), time_steps_for_rnn), testSetRatio)
+            trainSet += trainIter
+            testSet += testIter
 
-    return result
+    return trainSet, testSet
 
   def readDataSetFromOneFile(self, filename, time_steps_for_rnn):
     dataSet = []
