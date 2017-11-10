@@ -75,7 +75,8 @@ class RrPeriodicalNetwork:
 
       with tf.name_scope('loss'):
         error_tensor =  (self.predict - tf.reshape(self.labelTensor, [-1,1]))
-        self.loss = tf.reduce_mean(tf.pow(error_tensor, 2))
+        rmse = tf.sqrt(tf.reduce_mean(tf.pow(error_tensor, 2)))
+        self.loss = rmse
         tf.summary.scalar('Loss', self.loss) 
 
       # define train ops
@@ -168,7 +169,7 @@ class RrPeriodicalNetwork:
 
   def validate(self, vData, vLabel, idx, isPrintDebugFile=False, isTestMode=False):
     num_of_element = vData.shape[0]
-    [e_tensor, tb_sum] = self.sess.run([self.predict, self.tb_sum],\
+    [e_tensor, loss, tb_sum] = self.sess.run([self.predict, self.loss, self.tb_sum],\
                                                  feed_dict={self.batch_size_t: num_of_element, self.inputTensor:vData, self.labelTensor:vLabel})
     if isTestMode:
       writer = self.test_writer
@@ -184,8 +185,8 @@ class RrPeriodicalNetwork:
     num_correct = np.where(error_tensor <= self.predict_range)[0].shape[0]
     num_wrong = num_of_element - num_correct
 
-    print "Total = %d. %d predicted correct, acc = %f"\
-          % (num_of_element, num_correct, num_correct*1.0/num_of_element)
+    print "Total = %d. RMSE=%.2f, %d predicted correct, acc = %2f"\
+          % (num_of_element, loss, num_correct, num_correct*1.0/num_of_element)
     
     if isPrintDebugFile:
       csvData = np.concatenate((e_tensor, vLabel, vData), axis=1)
