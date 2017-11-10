@@ -50,3 +50,16 @@ class DataReaderMITBIH:
 
     return dataSet
 
+  def dumpRRiList(self, folderPath):
+    if os.path.isfile(self.filename):
+      rri = self.readRriListFromFile(self.filename)
+      with open(os.path.join(folderPath, self.filename+'_rri.txt'), 'w') as f:
+        f.write(rri)
+    elif os.path.isdir(self.filename):
+      for root, dirs, filenames in os.walk(self.filename):
+        for file in filenames:
+          if 'Rpeak.txt' in file:
+            rri = self.readRriListFromFile(os.path.join(root,file))
+            with open(os.path.join(folderPath, file + '_rri.txt'), 'w') as f:
+              f.write(",".join(map(str, rri)))
+
